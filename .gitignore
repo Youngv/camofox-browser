@@ -32,7 +32,10 @@ build/
 .DS_Store
 Thumbs.db
 
-.github/
+.github/*
+!.github/workflows/
+!.github/workflows/publish-image.yml
+!.github/workflows/sync-upstream.yml
 fly.toml
 railway.toml
 
