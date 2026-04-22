@@ -1,0 +1,106 @@
+name: Publish Image
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+    paths:
+      - '.github/workflows/publish-image.yml'
+      - 'Dockerfile'
+      - 'Makefile'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'server.js'
+      - 'lib/**'
+  workflow_dispatch:
+    inputs:
+      checkout_ref:
+        description: Git ref to build from
+        required: false
+        type: string
+      publish_tag:
+        description: Image tag to publish, for example v1.5.2
+        required: false
+        type: string
+      publish_latest:
+        description: Also publish latest
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: ghcr.io
+      PLATFORM: linux/amd64
+      ARCH: x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.ref }}
+
+      - name: Set image metadata
+        shell: bash
+        run: |
+          echo "VERSION=$(sed -n 's/^VERSION  ?= //p' Makefile)" >> "$GITHUB_ENV"
+          echo "RELEASE=$(sed -n 's/^RELEASE  ?= //p' Makefile)" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${GITHUB_REPOSITORY_OWNER,,}/camofox-browser" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch Camoufox dist files
+        run: make fetch ARCH=${ARCH}
+
+      - name: Prepare image tags
+        id: tags
+        shell: bash
+        run: |
+          image_base="${REGISTRY}/${IMAGE_NAME}"
+          publish_tag="${{ inputs.publish_tag }}"
+          publish_latest="${{ inputs.publish_latest }}"
+
+          {
+            echo 'value<<EOF'
+            if [[ -n "${publish_tag}" ]]; then
+              echo "${image_base}:${publish_tag}"
+            elif [[ "${publish_latest}" == "true" || "${GITHUB_REF}" == "refs/heads/master" ]]; then
+              echo "${image_base}:latest"
+            elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+              echo "${image_base}:${GITHUB_REF#refs/tags/}"
+            fi
+            echo "${image_base}:${GITHUB_SHA}"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ env.PLATFORM }}
+          push: true
+          provenance: false
+          build-args: |
+            ARCH=${{ env.ARCH }}
+            CAMOUFOX_VERSION=${{ env.VERSION }}
+            CAMOUFOX_RELEASE=${{ env.RELEASE }}
+          tags: ${{ steps.tags.outputs.value }}

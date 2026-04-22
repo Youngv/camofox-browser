@@ -1,0 +1,98 @@
+name: Sync Upstream
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_all_tags:
+        description: Dispatch image builds for all v* tags after sync
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Snapshot existing tags
+        run: git tag --list 'v*' | sort -V > /tmp/tags-before.txt
+
+      - name: Sync master and tags from upstream
+        run: |
+          git remote add upstream https://github.com/jo-inc/camofox-browser.git 2>/dev/null || true
+          git fetch upstream --prune --tags
+          current_head="$(git rev-parse HEAD)"
+          git checkout -B master upstream/master
+          git checkout "${current_head}" -- .gitignore .github/workflows/publish-image.yml .github/workflows/sync-upstream.yml
+          git add .gitignore .github/workflows/publish-image.yml .github/workflows/sync-upstream.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: keep fork workflows after upstream sync"
+          fi
+          git push origin master --force
+          git push origin --tags --force
+
+      - name: Collect publish refs
+        id: refs
+        shell: bash
+        run: |
+          git tag --list 'v*' | sort -V > /tmp/tags-after.txt
+          if [[ "${{ inputs.publish_all_tags }}" == "true" ]]; then
+            cp /tmp/tags-after.txt /tmp/tags-to-publish.txt
+          else
+            comm -13 /tmp/tags-before.txt /tmp/tags-after.txt > /tmp/tags-to-publish.txt || true
+          fi
+          {
+            echo 'new_tags<<EOF'
+            cat /tmp/tags-to-publish.txt
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch latest publish
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-image.yml',
+              ref: 'master',
+              inputs: {
+                checkout_ref: 'master',
+                publish_latest: 'true',
+              },
+            });
+
+      - name: Dispatch tag publishes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tags = `${{ steps.refs.outputs.new_tags }}`.split('\n').map((s) => s.trim()).filter(Boolean);
+            for (const tag of tags) {
+              core.info(`Dispatching publish-image.yml for ${tag}`);
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'publish-image.yml',
+                ref: 'master',
+                inputs: {
+                  checkout_ref: tag,
+                  publish_tag: tag,
+                  publish_latest: 'false',
+                },
+              });
+            }
