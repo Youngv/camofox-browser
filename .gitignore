@@ -20,7 +20,6 @@ coverage/
 # Build
 dist/
 build/
-/plugin.js.map
 
 # IDE
 .idea/
@@ -33,8 +32,12 @@ build/
 .DS_Store
 Thumbs.db
 
-# .github/ — removed to allow CI workflow tracking
+.github/*
+!.github/workflows/
+!.github/workflows/publish-image.yml
+!.github/workflows/sync-upstream.yml
 fly.toml
+railway.toml
 
 # Camoufox cache
 .camoufox/
